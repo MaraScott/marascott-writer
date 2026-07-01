@@ -47,6 +47,45 @@ export function createApiHandler() {
         return sendJson(res, await getStatus())
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/index/rebuild') {
+        return sendJson(res, await getStatus())
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/entities') {
+        const body = await readJson(req)
+        const kind = assertEntityKind(body.kind)
+        const name = assertString(body.name, 'name')
+        await addRegistryEntity(kind, name)
+        return sendJson(res, await getStatus())
+      }
+
+      if (req.method === 'PATCH' && url.pathname === '/api/entities/metadata') {
+        const body = await readJson(req)
+        const kind = assertEntityKind(body.kind)
+        const name = assertString(body.name, 'name')
+        const metadata = assertRegistryMetadata(body.metadata)
+        await updateRegistryMetadata(kind, name, metadata)
+        return sendJson(res, await getStatus())
+      }
+
+      if (req.method === 'PATCH' && url.pathname === '/api/entities') {
+        const body = await readJson(req)
+        const kind = assertEntityKind(body.kind)
+        const name = assertString(body.name, 'name')
+        const nextKind = assertEntityKind(body.nextKind ?? body.kind)
+        const nextName = assertString(body.nextName ?? body.name, 'nextName')
+        await updateRegistryEntity({ kind, name, nextKind, nextName })
+        return sendJson(res, await getStatus())
+      }
+
+      if (req.method === 'DELETE' && url.pathname === '/api/entities') {
+        const body = await readJson(req)
+        const kind = assertEntityKind(body.kind)
+        const name = assertString(body.name, 'name')
+        await removeRegistryEntity(kind, name)
+        return sendJson(res, await getStatus())
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/open/canon') {
         const config = await readConfig()
         await openFolder(config.canonDir)
@@ -105,6 +144,11 @@ export async function getStatus() {
       config: configStatus,
       files: [],
       events: [],
+      characters: [],
+      locations: [],
+      objects: [],
+      plotEvents: [],
+      arcs: [],
       generatedAt: new Date().toISOString(),
     }
   }
@@ -146,6 +190,7 @@ export async function getStatus() {
     const content = await fs.readFile(path.join(cacheDir, file.name), 'utf8')
     events.push(...parseOutline(content, file.name).events)
   }
+  const canonViews = await buildCanonViews(files, events)
 
   return {
     canonDir: config.canonDir,
@@ -153,6 +198,7 @@ export async function getStatus() {
     config: configStatus,
     files,
     events,
+    ...canonViews,
     generatedAt: new Date().toISOString(),
   }
 }
@@ -392,6 +438,308 @@ async function writeWorkingFile(name, content) {
   await writeFileAtomic(path.join(cacheDir, name), content)
 }
 
+const registryFileByKind = {
+  character: 'characters.md',
+  location: 'locations.md',
+  object: 'objects.md',
+  event: 'events.md',
+  arc: 'arcs.md',
+}
+
+const registryTitleByKind = {
+  character: 'Characters',
+  location: 'Locations',
+  object: 'Objects',
+  event: 'Major Plot Events',
+  arc: 'Narrative Arcs',
+}
+
+async function addRegistryEntity(kind, name) {
+  const fileName = registryFileByKind[kind]
+  const title = registryTitleByKind[kind]
+  const cleanName = cleanEntityName(name)
+  if (!isEntityCandidate(cleanName)) {
+    throw new Error(`Invalid ${kind} name: ${name}`)
+  }
+
+  await ensureDirectories()
+  const filePath = path.join(cacheDir, fileName)
+  const existing = await fs.readFile(filePath, 'utf8').catch(() => `# ${title}\n`)
+  const outline = parseOutline(existing, fileName)
+  const normalizedName = cleanName.toLowerCase()
+  const exists = outline.headings.some(
+    (heading) => heading.depth === 2 && cleanEntityName(heading.text).toLowerCase() === normalizedName,
+  )
+
+  if (exists) return
+
+  const next = `${existing.trimEnd()}\n\n## ${cleanName}\n`
+  await writeWorkingFile(fileName, next)
+}
+
+async function updateRegistryEntity({ kind, name, nextKind, nextName }) {
+  const cleanName = cleanEntityName(name)
+  const cleanNextName = cleanEntityName(nextName)
+  if (!isEntityCandidate(cleanName)) {
+    throw new Error(`Invalid ${kind} name: ${name}`)
+  }
+  if (!isEntityCandidate(cleanNextName)) {
+    throw new Error(`Invalid ${nextKind} name: ${nextName}`)
+  }
+
+  const sourceFileName = registryFileByKind[kind]
+  const targetFileName = registryFileByKind[nextKind]
+  const sourceContent = await readRegistryContent(kind)
+  const sourceSection =
+    findRegistrySection(sourceContent, cleanName) ??
+    (cleanName.toLowerCase() !== cleanNextName.toLowerCase()
+      ? findRegistrySection(sourceContent, cleanNextName)
+      : null)
+  if (!sourceSection) {
+    throw new Error(`${cleanName} was not found in ${sourceFileName}`)
+  }
+
+  if (sourceFileName === targetFileName) {
+    if (registryHasEntity(sourceContent, cleanNextName, sourceSection.start)) {
+      throw new Error(`${cleanNextName} already exists in ${targetFileName}`)
+    }
+
+    const lines = sourceContent.split(/\r?\n/)
+    lines[sourceSection.start] = `## ${cleanNextName}`
+    await writeWorkingFile(sourceFileName, normalizeRegistryContent(lines.join('\n')))
+    return
+  }
+
+  const targetContent = await readRegistryContent(nextKind)
+  if (registryHasEntity(targetContent, cleanNextName)) {
+    throw new Error(`${cleanNextName} already exists in ${targetFileName}`)
+  }
+
+  const sourceLines = sourceContent.split(/\r?\n/)
+  const movedLines = sourceLines.slice(sourceSection.start, sourceSection.end)
+  movedLines[0] = `## ${cleanNextName}`
+
+  const nextSourceContent = removeRegistrySection(sourceContent, sourceSection)
+  const nextTargetContent = appendRegistrySection(targetContent, movedLines)
+  await writeWorkingFile(sourceFileName, nextSourceContent)
+  await writeWorkingFile(targetFileName, nextTargetContent)
+}
+
+async function removeRegistryEntity(kind, name) {
+  const cleanName = cleanEntityName(name)
+  if (!isEntityCandidate(cleanName)) {
+    throw new Error(`Invalid ${kind} name: ${name}`)
+  }
+
+  const fileName = registryFileByKind[kind]
+  const content = await readRegistryContent(kind)
+  const section = findRegistrySection(content, cleanName)
+  if (!section) {
+    throw new Error(`${cleanName} was not found in ${fileName}`)
+  }
+
+  await writeWorkingFile(fileName, removeRegistrySection(content, section))
+}
+
+async function updateRegistryMetadata(kind, name, metadata) {
+  const cleanName = cleanEntityName(name)
+  if (!isEntityCandidate(cleanName)) {
+    throw new Error(`Invalid ${kind} name: ${name}`)
+  }
+
+  const fileName = registryFileByKind[kind]
+  const content = await readRegistryContent(kind)
+  const section = findRegistrySection(content, cleanName)
+  if (!section) {
+    throw new Error(`${cleanName} was not found in ${fileName}`)
+  }
+
+  await writeWorkingFile(fileName, setRegistrySectionMetadata(content, section, metadata))
+}
+
+async function readRegistryContent(kind) {
+  const fileName = registryFileByKind[kind]
+  const title = registryTitleByKind[kind]
+  await ensureDirectories()
+  return fs.readFile(path.join(cacheDir, fileName), 'utf8').catch(() => `# ${title}\n`)
+}
+
+function findRegistrySection(content, name) {
+  const normalizedName = cleanEntityName(name).toLowerCase()
+  const lines = content.split(/\r?\n/)
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const heading = lines[index].match(/^(#{2,6})\s+(.+?)\s*$/)
+    if (!heading) continue
+    if (heading[1].length !== 2) continue
+    if (cleanEntityName(heading[2]).toLowerCase() !== normalizedName) continue
+
+    const depth = heading[1].length
+    let end = lines.length
+    for (let next = index + 1; next < lines.length; next += 1) {
+      const nextHeading = lines[next].match(/^(#{1,6})\s+(.+?)\s*$/)
+      if (nextHeading && nextHeading[1].length <= depth) {
+        end = next
+        break
+      }
+    }
+
+    return { start: index, end, depth }
+  }
+
+  return null
+}
+
+function registryHasEntity(content, name, excludedStart = null) {
+  const normalizedName = cleanEntityName(name).toLowerCase()
+  const lines = content.split(/\r?\n/)
+  return lines.some((line, index) => {
+    if (excludedStart !== null && index === excludedStart) return false
+    const heading = line.match(/^(#{2,6})\s+(.+?)\s*$/)
+    return (
+      !!heading &&
+      heading[1].length === 2 &&
+      cleanEntityName(heading[2]).toLowerCase() === normalizedName
+    )
+  })
+}
+
+function removeRegistrySection(content, section) {
+  const lines = content.split(/\r?\n/)
+  const next = [...lines.slice(0, section.start), ...lines.slice(section.end)]
+  return normalizeRegistryContent(next.join('\n'))
+}
+
+function appendRegistrySection(content, sectionLines) {
+  const cleanedSection = sectionLines.join('\n').trimEnd()
+  const base = content.trimEnd()
+  return normalizeRegistryContent(`${base}\n\n${cleanedSection}\n`)
+}
+
+function setRegistrySectionMetadata(content, section, metadata) {
+  const lines = content.split(/\r?\n/)
+  const sectionLines = lines.slice(section.start, section.end)
+  const bodyLines = sectionLines.slice(getRegistryBodyStart(sectionLines))
+  while (bodyLines[0]?.trim() === '') {
+    bodyLines.shift()
+  }
+
+  const metadataLines = formatRegistryMetadata(metadata)
+  const nextSectionLines = [
+    sectionLines[0],
+    ...metadataLines,
+    ...(metadataLines.length > 0 && bodyLines.length > 0 ? [''] : []),
+    ...bodyLines,
+  ]
+  const nextLines = [...lines.slice(0, section.start), ...nextSectionLines, ...lines.slice(section.end)]
+  return normalizeRegistryContent(nextLines.join('\n'))
+}
+
+function getRegistryBodyStart(sectionLines) {
+  let index = 1
+  while (index < sectionLines.length) {
+    const line = sectionLines[index]
+    if (line.trim() === '' || isRegistryMetadataLine(line)) {
+      index += 1
+      continue
+    }
+    break
+  }
+  return index
+}
+
+function parseRegistryMetadata(content, section) {
+  const lines = content.split(/\r?\n/).slice(section.start + 1, section.end)
+  const metadata = { aliases: [], description: '', eventIds: [] }
+
+  for (const line of lines) {
+    if (line.trim() === '') continue
+    const match = line.match(/^\s*(?:[-*]\s*)?(Aliases|Description|Events)\s*:\s*(.*?)\s*$/i)
+    if (!match) break
+
+    const key = match[1].toLowerCase()
+    const value = match[2].trim()
+    if (key === 'aliases') {
+      metadata.aliases = parseListMetadata(value)
+    }
+    if (key === 'description') {
+      metadata.description = value
+    }
+    if (key === 'events') {
+      metadata.eventIds = parseEventIdList(value)
+    }
+  }
+
+  return metadata
+}
+
+function isRegistryMetadataLine(line) {
+  return /^\s*(?:[-*]\s*)?(Aliases|Description|Events)\s*:/i.test(line)
+}
+
+function formatRegistryMetadata(metadata) {
+  const lines = []
+  const aliases = uniqueCleanList(metadata.aliases ?? [])
+  const description = normalizeMetadataText(metadata.description ?? '')
+  const eventIds = uniqueCleanList(metadata.eventIds ?? []).map((eventId) => eventId.toUpperCase())
+
+  if (aliases.length > 0) {
+    lines.push(`Aliases: ${aliases.join(', ')}`)
+  }
+  if (description) {
+    lines.push(`Description: ${description}`)
+  }
+  if (eventIds.length > 0) {
+    lines.push(`Events: ${eventIds.join(', ')}`)
+  }
+
+  return lines
+}
+
+function assertRegistryMetadata(value) {
+  const metadata = value && typeof value === 'object' ? value : {}
+  return {
+    aliases: Array.isArray(metadata.aliases)
+      ? uniqueCleanList(metadata.aliases)
+      : parseListMetadata(String(metadata.aliases ?? '')),
+    description: normalizeMetadataText(String(metadata.description ?? '')),
+    eventIds: Array.isArray(metadata.eventIds)
+      ? uniqueCleanList(metadata.eventIds).map((eventId) => eventId.toUpperCase())
+      : parseEventIdList(String(metadata.eventIds ?? '')),
+  }
+}
+
+function parseListMetadata(value) {
+  return uniqueCleanList(String(value).split(/[,;]/))
+}
+
+function parseEventIdList(value) {
+  return uniqueCleanList(String(value).match(/T\d{4}/gi) ?? []).map((eventId) => eventId.toUpperCase())
+}
+
+function uniqueCleanList(values) {
+  const seen = new Set()
+  const result = []
+  for (const value of values) {
+    const clean = String(value).replace(/\s+/g, ' ').trim()
+    if (!clean) continue
+    const key = clean.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(clean)
+  }
+  return result
+}
+
+function normalizeMetadataText(value) {
+  return String(value).replace(/\s+/g, ' ').trim()
+}
+
+function normalizeRegistryContent(content) {
+  const normalized = content.replace(/\n{3,}/g, '\n\n').trimEnd()
+  return `${normalized}\n`
+}
+
 async function readConfig() {
   await fs.mkdir(appDataRoot, { recursive: true })
   const savedConfig = await readSavedConfig()
@@ -616,10 +964,323 @@ function parseOutline(content, source) {
   }
 }
 
+async function buildCanonViews(files, events) {
+  const sourceFiles = files.filter((file) => file.localHash && file.kind === 'source')
+  const documents = []
+
+  for (const file of sourceFiles) {
+    const content = await fs.readFile(path.join(cacheDir, file.name), 'utf8')
+    documents.push({
+      source: file.name,
+      content,
+      outline: parseOutline(content, file.name),
+    })
+  }
+
+  const characters = new Map()
+  const locations = new Map()
+  const objects = new Map()
+  const plotEvents = new Map()
+  const arcDocuments = []
+
+  for (const document of documents) {
+    if (document.source.toLowerCase() === 'characters.md') {
+      addExplicitHeadingEntities(characters, 'character', document)
+    }
+    if (document.source.toLowerCase() === 'locations.md') {
+      addExplicitHeadingEntities(locations, 'location', document)
+    }
+    if (document.source.toLowerCase() === 'objects.md') {
+      addExplicitHeadingEntities(objects, 'object', document)
+    }
+    if (document.source.toLowerCase() === 'events.md') {
+      addExplicitHeadingEntities(plotEvents, 'event', document)
+    }
+    if (document.source.toLowerCase() === 'arcs.md') {
+      arcDocuments.push(document)
+    }
+  }
+
+  indexEntityOccurrences({ characters, locations, objects, plotEvents }, documents)
+
+  const characterList = finalizeEntities(characters)
+  const locationList = finalizeEntities(locations)
+
+  return {
+    characters: characterList,
+    locations: locationList,
+    objects: finalizeEntities(objects),
+    plotEvents: finalizeEntities(plotEvents),
+    arcs: buildRegistryArcs(arcDocuments, events),
+  }
+}
+
+function addExplicitHeadingEntities(map, kind, document) {
+  for (const heading of document.outline.headings) {
+    if (heading.depth !== 2) continue
+    const name = cleanEntityName(heading.text.replace(/^(T\d{4})\s+[—-]\s+/, ''))
+    if (!isEntityCandidate(name)) continue
+    if (isContainerHeading(name, kind)) continue
+    const section = findRegistrySection(document.content, name)
+    const metadata = section ? parseRegistryMetadata(document.content, section) : null
+    addEntityMention(map, {
+      kind,
+      name,
+      source: document.source,
+      lineNumber: heading.lineNumber,
+      eventId: null,
+      inferred: false,
+      metadata,
+    })
+  }
+}
+
+function indexEntityOccurrences(maps, documents) {
+  const registryFiles = new Set(Object.values(registryFileByKind).map((name) => name.toLowerCase()))
+  const entities = [
+    ...maps.characters.values(),
+    ...maps.locations.values(),
+    ...maps.objects.values(),
+    ...maps.plotEvents.values(),
+  ].filter((entity) => isEntityCandidate(entity.name))
+
+  for (const entity of entities) {
+    entity.instances = []
+    entity.eventIds = new Set()
+    entity.mentionCount = 0
+  }
+
+  for (const document of documents) {
+    if (registryFiles.has(document.source.toLowerCase())) continue
+
+    const lines = document.content.split(/\r?\n/)
+    let currentEventId = null
+    let inFence = false
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const rawLine = lines[index]
+      const lineNumber = index + 1
+
+      if (/^\s*```/.test(rawLine)) {
+        inFence = !inFence
+      }
+
+      const heading = rawLine.match(/^#{1,6}\s+(T\d{4})\s+[—-]\s+(.+?)\s*$/)
+      if (heading) {
+        currentEventId = heading[1]
+      }
+
+      if (inFence) continue
+
+      const searchableLine = stripMarkdownTargets(rawLine)
+      for (const entity of entities) {
+        for (const searchName of getEntitySearchNames(entity)) {
+          const matches = findNameOccurrences(searchableLine, searchName)
+          for (const match of matches) {
+            addEntityInstance(entity, {
+              source: document.source,
+              lineNumber,
+              columnNumber: match.index + 1,
+              excerpt: createOccurrenceExcerpt(searchableLine, match.index, searchName.length),
+              eventId: currentEventId,
+              match: searchName,
+            })
+          }
+        }
+      }
+    }
+  }
+}
+
+function getEntitySearchNames(entity) {
+  return uniqueCleanList([entity.name, ...(entity.aliases ?? [])])
+}
+
+function stripMarkdownTargets(text) {
+  return text
+    .replace(/`[^`\n]*`/g, ' ')
+    .replace(/\]\([^)]+\)/g, ']')
+    .replace(/!\[[^\]\n]*\]\([^)]+\)/g, ' ')
+}
+
+function findNameOccurrences(text, name) {
+  const matches = []
+  const needle = name.toLocaleLowerCase()
+  if (!needle) return matches
+
+  const haystack = text.toLocaleLowerCase()
+  let index = 0
+  while ((index = haystack.indexOf(needle, index)) !== -1) {
+    const before = index > 0 ? text[index - 1] : ''
+    const after = text[index + name.length] ?? ''
+    if (isNameBoundary(before) && isNameBoundary(after)) {
+      matches.push({ index })
+    }
+    index += Math.max(needle.length, 1)
+  }
+
+  return matches
+}
+
+function isNameBoundary(char) {
+  return !char || !/[\p{L}\p{N}_]/u.test(char)
+}
+
+function addEntityInstance(entity, instance) {
+  const id = `${instance.source}:${instance.lineNumber}:${instance.columnNumber}`
+  if (entity.instances.some((existing) => existing.id === id)) return
+
+  entity.instances.push({
+    id,
+    ...instance,
+  })
+  entity.mentionCount = entity.instances.length
+  if (instance.eventId) {
+    entity.eventIds.add(instance.eventId)
+  }
+}
+
+function createOccurrenceExcerpt(text, start, length) {
+  const compact = text.replace(/\s+/g, ' ').trim()
+  if (compact.length <= 180) return compact
+
+  const from = Math.max(0, start - 70)
+  const to = Math.min(text.length, start + length + 100)
+  const excerpt = text.slice(from, to).replace(/\s+/g, ' ').trim()
+  return `${from > 0 ? '...' : ''}${excerpt}${to < text.length ? '...' : ''}`
+}
+
+function addEntityMention(map, mention) {
+  const id = slugify(`${mention.kind}:${mention.name}`)
+  const existing =
+    map.get(id) ??
+    {
+      id,
+      kind: mention.kind,
+      name: mention.name,
+      source: mention.source,
+      lineNumber: mention.lineNumber,
+      eventIds: new Set(),
+      mentionCount: 0,
+      instances: [],
+      aliases: [],
+      description: '',
+      inferred: true,
+    }
+
+  existing.mentionCount += 1
+  if (mention.eventId) {
+    existing.eventIds.add(mention.eventId)
+  }
+  if (!mention.inferred && existing.inferred) {
+    existing.source = mention.source
+    existing.lineNumber = mention.lineNumber
+    existing.inferred = false
+  }
+  if (mention.lineNumber < existing.lineNumber && existing.inferred === mention.inferred) {
+    existing.source = mention.source
+    existing.lineNumber = mention.lineNumber
+  }
+  if (mention.metadata) {
+    existing.aliases = mention.metadata.aliases ?? []
+    existing.description = mention.metadata.description ?? ''
+  }
+
+  map.set(id, existing)
+}
+
+function finalizeEntities(map) {
+  return [...map.values()]
+    .map((entity) => ({
+      ...entity,
+      eventIds: [...entity.eventIds].sort(),
+      eventCount: entity.eventIds.size,
+      aliases: entity.aliases ?? [],
+      description: entity.description ?? '',
+    }))
+    .filter((entity) => entity.eventCount > 0 || !entity.inferred)
+    .sort(
+      (a, b) =>
+        b.eventCount - a.eventCount ||
+        b.mentionCount - a.mentionCount ||
+        a.name.localeCompare(b.name),
+    )
+}
+
+function buildRegistryArcs(documents, events) {
+  const eventMap = new Map(events.map((event) => [event.id, event]))
+  const arcs = []
+
+  for (const document of documents) {
+    for (const heading of document.outline.headings) {
+      if (heading.depth !== 2) continue
+      const title = cleanEntityName(heading.text)
+      if (!isEntityCandidate(title) || isContainerHeading(title, 'arc')) continue
+
+      const section = findRegistrySection(document.content, title)
+      const metadata = section ? parseRegistryMetadata(document.content, section) : { aliases: [], description: '', eventIds: [] }
+      const eventIds = metadata.eventIds.filter((eventId) => eventMap.has(eventId))
+      arcs.push({
+        id: slugify(`arc:${title}`),
+        title,
+        source: document.source,
+        lineNumber: heading.lineNumber,
+        eventIds,
+        eventCount: eventIds.length,
+        firstEventId: eventIds[0] ?? null,
+        lastEventId: eventIds[eventIds.length - 1] ?? null,
+        aliases: metadata.aliases,
+        description: metadata.description,
+      })
+    }
+  }
+
+  return arcs.sort(
+    (a, b) =>
+      b.eventCount - a.eventCount ||
+      a.title.localeCompare(b.title),
+  )
+}
+
+function cleanEntityName(name) {
+  return name
+    .replace(/[`*_#]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[.,:;!?()[\]{}]+$/g, '')
+    .trim()
+}
+
+function isEntityCandidate(name) {
+  if (!name || name.length < 2 || name.length > 70) return false
+  if (/^T\d{4}/.test(name)) return false
+  if (/https?:\/\//i.test(name)) return false
+  return /[A-Za-z]/.test(name)
+}
+
+function isContainerHeading(name, kind) {
+  return (
+    (kind === 'character' && /^characters?$/i.test(name)) ||
+    (kind === 'location' && /^locations?$/i.test(name)) ||
+    (kind === 'object' && /^objects?$/i.test(name)) ||
+    (kind === 'event' && /^events?$/i.test(name)) ||
+    (kind === 'arc' && /^arcs?$/i.test(name))
+  )
+}
+
+function slugify(value) {
+  return value
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^\w\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+}
+
 function orderContextSources(names) {
   const priority = [
     'bibisco.md',
     'timeline.md',
+    'events.md',
     'characters.md',
     'factions.md',
     'locations.md',
@@ -642,6 +1303,7 @@ function contextSectionTitle(name) {
   const map = {
     'bibisco.md': 'Project Writing Guidelines',
     'timeline.md': 'Chronology',
+    'events.md': 'Major Plot Events',
     'characters.md': 'Characters',
     'factions.md': 'Factions',
     'locations.md': 'Locations',
@@ -690,6 +1352,19 @@ function assertString(value, label) {
     throw new Error(`${label} must be a non-empty string`)
   }
   return value.trim()
+}
+
+function assertEntityKind(value) {
+  if (
+    value === 'character' ||
+    value === 'location' ||
+    value === 'object' ||
+    value === 'event' ||
+    value === 'arc'
+  ) {
+    return value
+  }
+  throw new Error(`Unsupported entity kind: ${value}`)
 }
 
 function resolveDefaultCanonDir() {

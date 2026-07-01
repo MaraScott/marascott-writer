@@ -23,6 +23,44 @@ export interface TimelineEvent {
   lineNumber: number
 }
 
+export interface CanonInstance {
+  id: string
+  source: string
+  lineNumber: number
+  columnNumber: number
+  excerpt: string
+  eventId: string | null
+  match: string
+}
+
+export interface CanonEntity {
+  id: string
+  kind: 'character' | 'location' | 'object' | 'event'
+  name: string
+  source: string
+  lineNumber: number
+  eventCount: number
+  mentionCount: number
+  eventIds: string[]
+  inferred: boolean
+  instances: CanonInstance[]
+  aliases: string[]
+  description: string
+}
+
+export interface CanonArc {
+  id: string
+  title: string
+  source: string
+  lineNumber: number
+  eventCount: number
+  eventIds: string[]
+  firstEventId: string | null
+  lastEventId: string | null
+  aliases: string[]
+  description: string
+}
+
 export interface CanonConfigStatus {
   appRoot: string
   envPath: string
@@ -46,6 +84,11 @@ export interface CanonStatus {
   config: CanonConfigStatus
   files: CanonFileSummary[]
   events: TimelineEvent[]
+  characters: CanonEntity[]
+  locations: CanonEntity[]
+  objects: CanonEntity[]
+  plotEvents: CanonEntity[]
+  arcs: CanonArc[]
   generatedAt: string
 }
 

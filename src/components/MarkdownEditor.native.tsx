@@ -5,6 +5,12 @@ interface MarkdownEditorProps {
   onChange: (value: string) => void
   onSave?: () => void
   readOnly?: boolean
+  tagSuggestions?: Array<{
+    kind: 'character' | 'location' | 'object' | 'event' | 'timeline'
+    id: string
+    label: string
+    detail?: string
+  }>
   navigationTarget?: {
     lineNumber: number
     token: string
