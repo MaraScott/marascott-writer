@@ -6,7 +6,6 @@ import {
   Separator,
   Switch,
   Text,
-  TextArea,
   XStack,
   YStack,
 } from 'tamagui'
@@ -19,6 +18,8 @@ import {
   Search,
   UploadCloud,
 } from '@tamagui/lucide-icons'
+import { MarkdownEditor } from './components/MarkdownEditor'
+import { MarkdownPreview } from './components/MarkdownPreview'
 import type { CanonFileSummary, CanonStatus, SyncResult, TimelineEvent } from './types'
 
 const api = async <T,>(path: string, init?: RequestInit): Promise<T> => {
@@ -59,6 +60,11 @@ const configSourceLabel: Record<CanonStatus['config']['canonDirSource'], string>
   saved: 'Saved config',
 }
 
+interface EditorNavigationTarget {
+  lineNumber: number
+  token: string
+}
+
 export function App() {
   const [status, setStatus] = useState<CanonStatus | null>(null)
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -70,6 +76,9 @@ export function App() {
   const [autoSync, setAutoSync] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null)
+  const [editorTarget, setEditorTarget] = useState<EditorNavigationTarget | null>(null)
+  const [previewMode, setPreviewMode] = useState(false)
 
   const refreshStatus = useCallback(async () => {
     const next = await api<CanonStatus>('/api/status')
@@ -279,6 +288,25 @@ export function App() {
     }
   }
 
+  const selectTimelineEvent = (event: TimelineEvent) => {
+    if (hasUnsavedEditorChange && selectedFile && selectedFile !== event.source) {
+      const shouldContinue = window.confirm(
+        'You have unsaved local edits in the current file. Switch files without saving them?',
+      )
+      if (!shouldContinue) return
+    }
+
+    const eventKey = `${event.source}:${event.id}`
+    setSelectedEventKey(eventKey)
+    setSelectedFile(event.source)
+    setEditorTarget({
+      lineNumber: event.lineNumber,
+      token: `${eventKey}:${Date.now()}`,
+    })
+    setPreviewMode(false)
+    setNotice(`Opened ${event.id} in ${event.source} at line ${event.lineNumber}.`)
+  }
+
   return (
     <YStack className="app-shell">
       <XStack className="topbar">
@@ -433,16 +461,27 @@ export function App() {
                 </Text>
               )}
             </YStack>
+            <XStack className="preview-toggle">
+              <Text className={!previewMode ? 'toggle-label active' : 'toggle-label'}>Edit</Text>
+              <Switch size="$3" checked={previewMode} onCheckedChange={setPreviewMode}>
+                <Switch.Thumb animation="quick" />
+              </Switch>
+              <Text className={previewMode ? 'toggle-label active' : 'toggle-label'}>Preview</Text>
+            </XStack>
             <Button icon={Save} disabled={!selectedFile || !!busy || !hasUnsavedEditorChange} onPress={saveFile}>
               Save Local
             </Button>
           </XStack>
-          <TextArea
-            className="markdown-editor"
-            value={editorValue}
-            onChangeText={setEditorValue}
-            spellCheck={false}
-          />
+          {previewMode ? (
+            <MarkdownPreview value={editorValue} />
+          ) : (
+            <MarkdownEditor
+              value={editorValue}
+              onChange={setEditorValue}
+              onSave={saveFile}
+              navigationTarget={editorTarget}
+            />
+          )}
         </YStack>
 
         <YStack className="inspector">
@@ -450,7 +489,12 @@ export function App() {
           <ScrollView className="event-list">
             <YStack gap="$2">
               {filteredEvents.map((event) => (
-                <EventRow key={`${event.source}-${event.id}`} event={event} />
+                <EventRow
+                  key={`${event.source}-${event.id}`}
+                  event={event}
+                  active={selectedEventKey === `${event.source}:${event.id}`}
+                  onPress={() => selectTimelineEvent(event)}
+                />
               ))}
             </YStack>
           </ScrollView>
@@ -492,18 +536,33 @@ function StatePill({ state }: { state: CanonFileSummary['syncState'] }) {
   return <Text className={`state-pill ${state}`}>{stateLabel[state]}</Text>
 }
 
-function EventRow({ event }: { event: TimelineEvent }) {
+function EventRow({
+  event,
+  active,
+  onPress,
+}: {
+  event: TimelineEvent
+  active: boolean
+  onPress: () => void
+}) {
   return (
-    <YStack className="event-row">
-      <XStack justifyContent="space-between" gap="$2">
-        <Text className="event-id">{event.id}</Text>
-        <Text className="event-source">{event.source}</Text>
-      </XStack>
-      <Text className="event-title">{event.title}</Text>
-      <Text className="event-era" numberOfLines={1}>
-        {event.era}
-      </Text>
-    </YStack>
+    <Button
+      chromeless
+      className={`event-row ${active ? 'active' : ''}`}
+      onPress={onPress}
+      title={`Open ${event.id} in ${event.source}`}
+    >
+      <YStack width="100%" gap="$1">
+        <XStack justifyContent="space-between" gap="$2">
+          <Text className="event-id">{event.id}</Text>
+          <Text className="event-source">{event.source} · line {event.lineNumber}</Text>
+        </XStack>
+        <Text className="event-title">{event.title}</Text>
+        <Text className="event-era" numberOfLines={1}>
+          {event.era}
+        </Text>
+      </YStack>
+    </Button>
   )
 }
 

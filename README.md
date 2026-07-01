@@ -63,3 +63,20 @@ ooam.context.digest.md
 ```
 
 These files are generated exports for ChatGPT context. Source files remain the editable canon.
+
+## Markdown Editor
+
+The editor is split by platform:
+
+```text
+src/components/MarkdownEditor.web.tsx     CodeMirror editor for web/desktop
+src/components/MarkdownEditor.native.tsx  React Native TextInput placeholder
+```
+
+The app imports `./components/MarkdownEditor`; Vite resolves that to the web
+implementation. A future Expo app can resolve the native implementation using
+React Native platform file resolution.
+
+Timeline events include source line numbers. Click an event in the Timeline
+panel to open its source Markdown file and jump directly to the event heading
+for editing.

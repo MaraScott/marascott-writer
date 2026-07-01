@@ -20,6 +20,7 @@ export interface TimelineEvent {
   title: string
   era: string
   source: string
+  lineNumber: number
 }
 
 export interface CanonConfigStatus {

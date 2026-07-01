@@ -9,11 +9,20 @@
     "preview": "node server/production.mjs"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.10.4",
+    "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/search": "^6.7.1",
+    "@codemirror/state": "^6.7.0",
+    "@codemirror/view": "^6.43.4",
     "@tamagui/config": "2.4.0",
     "@tamagui/lucide-icons": "2.0.0-rc.26",
     "react": "19.2.7",
     "react-dom": "19.2.7",
+    "react-markdown": "^10.1.0",
     "react-native-web": "0.21.2",
+    "remark-gfm": "^4.0.1",
     "tamagui": "2.4.0"
   },
   "devDependencies": {

@@ -1,6 +1,7 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import { tamaguiPlugin } from '@tamagui/vite-plugin'
+import { fileURLToPath } from 'node:url'
 
 export default defineConfig({
   plugins: [
@@ -17,6 +18,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      './components/MarkdownEditor': fileURLToPath(
+        new URL('./src/components/MarkdownEditor.web.tsx', import.meta.url),
+      ),
       'react-native': 'react-native-web',
     },
   },

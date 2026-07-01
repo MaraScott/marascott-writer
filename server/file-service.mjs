@@ -583,12 +583,15 @@ function parseOutline(content, source) {
   let title = source
   let era = 'Ungrouped'
 
-  for (const line of content.split(/\r?\n/)) {
+  const lines = content.split(/\r?\n/)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const lineNumber = index + 1
     const heading = line.match(/^(#{1,6})\s+(.+?)\s*$/)
     if (!heading) continue
     const depth = heading[1].length
     const text = heading[2].trim()
-    headings.push({ depth, text })
+    headings.push({ depth, text, lineNumber })
     if (title === source) title = text.replace(/^OoaM:\s*/i, '')
     if (depth <= 2 && !/^T\d{4}\s+[—-]/.test(text)) {
       era = text
@@ -600,6 +603,7 @@ function parseOutline(content, source) {
         title: event[2],
         era,
         source,
+        lineNumber,
       })
     }
   }
