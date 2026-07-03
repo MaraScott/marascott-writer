@@ -110,6 +110,16 @@ export function createApiHandler() {
         return sendJson(res, await exportContextPacks())
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/archive/export') {
+        return sendJson(res, await exportTimelineTagArchive())
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/archive/import') {
+        const body = await readJson(req)
+        const content = assertString(body.content, 'content')
+        return sendJson(res, await importTimelineTagArchive(content))
+      }
+
       const fileMatch = url.pathname.match(/^\/api\/files\/([^/]+)$/)
       if (fileMatch && req.method === 'GET') {
         const name = decodeURIComponent(fileMatch[1])
@@ -268,6 +278,7 @@ export async function syncDown() {
 
 export async function syncUp() {
   await exportContextFiles()
+  await exportTimelineTagArchiveFile()
   const config = await readConfig()
   await ensureDirectories()
   const manifest = await readManifest()
@@ -276,9 +287,11 @@ export async function syncUp() {
   const skipped = []
   const conflicts = []
   const messages = []
-  const generated = ['ooam.context.full.md', 'ooam.context.digest.md'].filter((name) =>
-    localNames.includes(name),
-  )
+  const generated = [
+    'ooam.context.full.md',
+    'ooam.context.digest.md',
+    archiveFileName,
+  ].filter((name) => localNames.includes(name))
 
   for (const name of localNames) {
     if (name.includes('.remote-conflict.') || name.includes('.local-conflict.')) {
@@ -324,6 +337,28 @@ export async function exportContextPacks() {
   await ensureDirectories()
   const generated = await exportContextFiles()
   return result('export-context', { generated })
+}
+
+export async function exportTimelineTagArchive() {
+  await ensureDirectories()
+  const generated = await exportTimelineTagArchiveFile()
+  return result('export-archive', { generated })
+}
+
+export async function importTimelineTagArchive(content) {
+  await ensureDirectories()
+  const files = parseTimelineTagArchive(content)
+  const imported = []
+
+  for (const source of files) {
+    await writeWorkingFile(source.name, source.content)
+    imported.push(source.name)
+  }
+
+  return result('import-archive', {
+    copied: imported,
+    messages: [`Imported ${imported.length} files from ${archiveFileName}.`],
+  })
 }
 
 async function exportContextFiles() {
@@ -409,6 +444,122 @@ async function exportContextFiles() {
   await writeWorkingFile('ooam.context.full.md', full)
   await writeWorkingFile('ooam.context.digest.md', digest)
   return ['ooam.context.full.md', 'ooam.context.digest.md']
+}
+
+const archiveFileName = 'ooam.timeline-tags.archive.md'
+const archiveSourceDefaults = {
+  'timeline.md': '# Timeline\n',
+  'events.md': '# Major Plot Events\n',
+  'characters.md': '# Characters\n',
+  'locations.md': '# Locations\n',
+  'objects.md': '# Objects\n',
+  'arcs.md': '# Narrative Arcs\n',
+}
+const archiveSourceNames = Object.keys(archiveSourceDefaults)
+const archiveStartPattern = /^<!-- OOAM_ARCHIVE_FILE_START name="([^"]+)" hash="([a-f0-9]+)" -->$/
+const archiveEndPattern = /^<!-- OOAM_ARCHIVE_FILE_END name="([^"]+)" -->$/
+
+async function exportTimelineTagArchiveFile() {
+  const sources = []
+
+  for (const name of archiveSourceNames) {
+    const rawContent = await fs
+      .readFile(path.join(cacheDir, name), 'utf8')
+      .catch(() => archiveSourceDefaults[name])
+    const content = `${rawContent.trimEnd()}\n`
+    sources.push({
+      name,
+      hash: hashText(content),
+      content,
+    })
+  }
+
+  const generatedAt = new Date().toISOString()
+  const archive = [
+    '<!--',
+    'OOAM TIMELINE TAG ARCHIVE',
+    `Generated: ${generatedAt}`,
+    'Import: this file can be imported by OoaM Canon Workbench to restore the separated source files.',
+    'Files:',
+    ...sources.map((source) => `- ${source.name} ${source.hash}`),
+    '-->',
+    '',
+    '# OoaM Timeline And Tag Archive',
+    '',
+    'This generated Markdown file stores the timeline and registry tag files as separate importable sections.',
+    'Edit source files in the app when possible; import this archive only when you want to restore those files.',
+    '',
+    ...sources.flatMap((source) => [
+      `## ${contextSectionTitle(source.name)}`,
+      '',
+      `<!-- OOAM_ARCHIVE_FILE_START name="${encodeURIComponent(source.name)}" hash="${source.hash}" -->`,
+      source.content.trimEnd(),
+      `<!-- OOAM_ARCHIVE_FILE_END name="${encodeURIComponent(source.name)}" -->`,
+      '',
+    ]),
+  ].join('\n')
+
+  await writeWorkingFile(archiveFileName, archive)
+  return [archiveFileName]
+}
+
+function parseTimelineTagArchive(content) {
+  if (!content.includes('OOAM TIMELINE TAG ARCHIVE')) {
+    throw new Error('This is not an OoaM timeline/tag archive file.')
+  }
+
+  const allowedNames = new Set(archiveSourceNames)
+  const lines = content.replace(/\r\n/g, '\n').split('\n')
+  const files = []
+  let current = null
+
+  for (const line of lines) {
+    const start = line.match(archiveStartPattern)
+    if (start) {
+      if (current) {
+        throw new Error(`Archive section for ${current.name} was not closed.`)
+      }
+      const name = decodeURIComponent(start[1])
+      assertArchiveSourceName(name, allowedNames)
+      current = { name, lines: [] }
+      continue
+    }
+
+    const end = line.match(archiveEndPattern)
+    if (end) {
+      if (!current) {
+        throw new Error('Archive contains a closing marker without an opening marker.')
+      }
+      const name = decodeURIComponent(end[1])
+      if (name !== current.name) {
+        throw new Error(`Archive section for ${current.name} was closed as ${name}.`)
+      }
+      const fileContent = `${current.lines.join('\n').trimEnd()}\n`
+      files.push({ name, content: fileContent })
+      current = null
+      continue
+    }
+
+    if (current) {
+      current.lines.push(line)
+    }
+  }
+
+  if (current) {
+    throw new Error(`Archive section for ${current.name} was not closed.`)
+  }
+  if (files.length === 0) {
+    throw new Error('Archive did not contain any importable files.')
+  }
+
+  return files
+}
+
+function assertArchiveSourceName(name, allowedNames) {
+  assertSafeFileName(name)
+  if (!allowedNames.has(name)) {
+    throw new Error(`Archive contains unsupported source file: ${name}`)
+  }
 }
 
 async function result(action, values) {
@@ -921,6 +1072,7 @@ function getSyncState(localHash, remoteHash, baseHash) {
 function getFileKind(name) {
   if (name.startsWith('_ooam.')) return 'system'
   if (name.startsWith('ooam.context.')) return 'generated'
+  if (name === archiveFileName) return 'generated'
   if (name.includes('.conflict.')) return 'conflict'
   return 'source'
 }

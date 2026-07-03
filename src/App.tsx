@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Button,
   Input,
@@ -160,6 +160,7 @@ export function App() {
   const [metadataDraft, setMetadataDraft] = useState<MetadataDraft>(emptyMetadataDraft)
   const editorDirtyRef = useRef(false)
   const editorDraftRef = useRef('')
+  const archiveImportInputRef = useRef<HTMLInputElement | null>(null)
   const [editorDirty, setEditorDirty] = useState(false)
   const metadataDraftRef = useRef<MetadataDraft>(emptyMetadataDraft)
 
@@ -193,10 +194,11 @@ export function App() {
           applyStatus(result.status, { force: true })
           const uploaded = result.uploaded.length
           const downloaded = result.downloaded.length
+          const copied = result.copied.length
           const conflicts = result.conflicts.length
           const generated = result.generated.length
           setNotice(
-            `${label}: ${uploaded} uploaded, ${downloaded} downloaded, ${generated} generated, ${conflicts} conflicts.`,
+            `${label}: ${uploaded} uploaded, ${downloaded} downloaded, ${copied} restored, ${generated} generated, ${conflicts} conflicts.`,
           )
         } else {
           applyStatus(result, { force: true })
@@ -221,11 +223,47 @@ export function App() {
     [runAction],
   )
 
-  const exportContext = useCallback(
-    () =>
-      runAction('Context Export', () =>
-        api<SyncResult>('/api/context/export', { method: 'POST' }),
-      ),
+  const exportArchive = useCallback(async () => {
+    setBusy('Export')
+    setError('')
+    try {
+      const result = await api<SyncResult>('/api/archive/export', { method: 'POST' })
+      applyStatus(result.status, { force: true })
+      const archiveName = result.generated[0] ?? 'ooam.timeline-tags.archive.md'
+      const archive = await api<{ name: string; content: string }>(
+        `/api/files/${encodeURIComponent(archiveName)}`,
+      )
+      downloadTextFile(archive.name, archive.content)
+      setNotice(`Export: downloaded ${archive.name}.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }, [applyStatus])
+
+  const selectArchiveImport = useCallback(() => {
+    archiveImportInputRef.current?.click()
+  }, [])
+
+  const importArchive = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.currentTarget.files?.[0]
+      event.currentTarget.value = ''
+      if (!file) return
+
+      try {
+        const content = await file.text()
+        await runAction('Archive Import', () =>
+          api<SyncResult>('/api/archive/import', {
+            method: 'POST',
+            body: JSON.stringify({ content }),
+          }),
+        )
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+    },
     [runAction],
   )
 
@@ -803,6 +841,13 @@ export function App() {
           </Text>
         </YStack>
         <XStack className="topbar-actions">
+          <input
+            ref={archiveImportInputRef}
+            className="archive-import-input"
+            type="file"
+            accept=".md,text/markdown,text/plain"
+            onChange={importArchive}
+          />
           <Button
             icon={DownloadCloud}
             disabled={!!busy}
@@ -822,10 +867,18 @@ export function App() {
           <Button
             icon={FileArchive}
             disabled={!!busy}
-            onPress={exportContext}
-            title="Generate context pack"
+            onPress={exportArchive}
+            title="Export timeline and tag files as one importable Markdown file"
           >
             Export
+          </Button>
+          <Button
+            icon={UploadCloud}
+            disabled={!!busy}
+            onPress={selectArchiveImport}
+            title="Import a timeline/tag Markdown archive into separate source files"
+          >
+            Import
           </Button>
           <Button
             icon={RefreshCw}
@@ -1593,6 +1646,18 @@ function Prompt({ text }: { text: string }) {
 
 function EmptyView({ label }: { label: string }) {
   return <Text className="empty-view">{label}</Text>
+}
+
+function downloadTextFile(name: string, content: string) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
 }
 
 function filterEntities(entities: CanonEntity[], query: string) {

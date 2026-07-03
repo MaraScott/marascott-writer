@@ -68,6 +68,10 @@ textarea {
   justify-content: flex-end;
 }
 
+.archive-import-input {
+  display: none;
+}
+
 .status-strip {
   align-items: center;
   gap: 10px;
