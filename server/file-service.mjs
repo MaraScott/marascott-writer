@@ -110,6 +110,26 @@ export function createApiHandler() {
         return sendJson(res, await exportContextPacks())
       }
 
+      if (req.method === 'POST' && url.pathname === '/api/chatgpt/request') {
+        const body = await readJson(req)
+        const mode = assertChatGptContextMode(body.mode)
+        const instruction = assertString(body.instruction, 'instruction')
+        const fileName = body.fileName === undefined ? null : assertString(body.fileName, 'fileName')
+        return sendJson(res, await createChatGptRequest({ mode, instruction, fileName }))
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/chatgpt/open') {
+        await openUrl('https://chatgpt.com/')
+        return sendJson(res, { opened: 'https://chatgpt.com/' })
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/chatgpt/response') {
+        const body = await readJson(req)
+        const content = assertString(body.content, 'content')
+        const title = body.title === undefined ? '' : assertOptionalString(body.title, 'title')
+        return sendJson(res, await saveChatGptResponse({ content, title }))
+      }
+
       if (req.method === 'POST' && url.pathname === '/api/archive/export') {
         return sendJson(res, await exportTimelineTagArchive())
       }
@@ -339,6 +359,67 @@ export async function exportContextPacks() {
   return result('export-context', { generated })
 }
 
+export async function createChatGptRequest({ mode, instruction, fileName }) {
+  await ensureDirectories()
+  const context = await readChatGptContext(mode, fileName)
+  const generatedAt = new Date().toISOString()
+  const content = [
+    '<!--',
+    'OOAM CHATGPT REQUEST',
+    `Generated: ${generatedAt}`,
+    `Context mode: ${mode}`,
+    `Context source: ${context.sourceName}`,
+    'Transport: paste this request into https://chatgpt.com/ with your regular ChatGPT account.',
+    '-->',
+    '',
+    '# OoaM ChatGPT Request',
+    '',
+    '## Request',
+    '',
+    instruction.trim(),
+    '',
+    '## Context',
+    '',
+    context.content.trimEnd(),
+    '',
+  ].join('\n')
+
+  const name = '_ooam.chatgpt-request.md'
+  await writeWorkingFile(name, content)
+  return {
+    name,
+    content,
+    chatGptUrl: 'https://chatgpt.com/',
+    generatedAt,
+  }
+}
+
+export async function saveChatGptResponse({ content, title }) {
+  await ensureDirectories()
+  const generatedAt = new Date().toISOString()
+  const safeTitle = title.trim() || 'ChatGPT response'
+  const response = [
+    '<!--',
+    'OOAM CHATGPT RESPONSE',
+    `Saved: ${generatedAt}`,
+    'Source: pasted from ChatGPT UI by the user.',
+    '-->',
+    '',
+    `# ${safeTitle}`,
+    '',
+    content.trim(),
+    '',
+  ].join('\n')
+
+  const name = `_ooam.chatgpt-response.${fileStamp(new Date(generatedAt))}.md`
+  await writeWorkingFile(name, response)
+  return {
+    name,
+    generatedAt,
+    status: await getStatus(),
+  }
+}
+
 export async function exportTimelineTagArchive() {
   await ensureDirectories()
   const generated = await exportTimelineTagArchiveFile()
@@ -444,6 +525,35 @@ async function exportContextFiles() {
   await writeWorkingFile('ooam.context.full.md', full)
   await writeWorkingFile('ooam.context.digest.md', digest)
   return ['ooam.context.full.md', 'ooam.context.digest.md']
+}
+
+async function readChatGptContext(mode, fileName) {
+  if (mode === 'current') {
+    if (!fileName) {
+      throw new Error('fileName is required when ChatGPT context mode is current.')
+    }
+    assertSafeFileName(fileName)
+    const content = await fs.readFile(path.join(cacheDir, fileName), 'utf8')
+    return {
+      sourceName: fileName,
+      content: [
+        `<!-- SOURCE: ${fileName} HASH: ${hashText(content)} -->`,
+        '',
+        content,
+      ].join('\n'),
+    }
+  }
+
+  await exportContextFiles()
+  const sourceName = mode === 'full' ? 'ooam.context.full.md' : 'ooam.context.digest.md'
+  return {
+    sourceName,
+    content: await fs.readFile(path.join(cacheDir, sourceName), 'utf8'),
+  }
+}
+
+function fileStamp(date) {
+  return date.toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-')
 }
 
 const archiveFileName = 'ooam.timeline-tags.archive.md'
@@ -1506,6 +1616,20 @@ function assertString(value, label) {
   return value.trim()
 }
 
+function assertOptionalString(value, label) {
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a string`)
+  }
+  return value.trim()
+}
+
+function assertChatGptContextMode(value) {
+  if (value === 'full' || value === 'digest' || value === 'current') {
+    return value
+  }
+  throw new Error(`Unsupported ChatGPT context mode: ${value}`)
+}
+
 function assertEntityKind(value) {
   if (
     value === 'character' ||
@@ -1579,6 +1703,18 @@ async function openFolder(directory) {
   const command =
     process.platform === 'win32' ? 'explorer.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
   const child = spawn(command, [directory], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  child.unref()
+}
+
+async function openUrl(url) {
+  const command =
+    process.platform === 'win32' ? 'cmd.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url]
+  const child = spawn(command, args, {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,

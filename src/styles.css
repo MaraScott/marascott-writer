@@ -635,6 +635,51 @@ textarea {
   gap: 8px;
 }
 
+.chatgpt-panel {
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.chatgpt-mode-row,
+.chatgpt-actions {
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chatgpt-mode {
+  border: 1px solid #d0d7e2;
+  background: #ffffff;
+}
+
+.chatgpt-mode.active {
+  border-color: #325b8c;
+  background: #eef5ff;
+}
+
+.chatgpt-textarea {
+  width: 100%;
+  min-height: 74px;
+  max-height: 160px;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid #d0d7e2;
+  background: #ffffff;
+  color: #182230;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.chatgpt-textarea.response {
+  min-height: 96px;
+}
+
+.chatgpt-meta {
+  font-size: 11px;
+  line-height: 16px;
+  color: #667085;
+}
+
 .prompt {
   padding: 9px;
   border-left: 3px solid #5e8c6a;

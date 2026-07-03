@@ -103,3 +103,18 @@ export interface SyncResult {
   messages: string[]
   status: CanonStatus
 }
+
+export type ChatGptContextMode = 'digest' | 'full' | 'current'
+
+export interface ChatGptRequest {
+  name: string
+  content: string
+  chatGptUrl: string
+  generatedAt: string
+}
+
+export interface ChatGptResponseResult {
+  name: string
+  generatedAt: string
+  status: CanonStatus
+}

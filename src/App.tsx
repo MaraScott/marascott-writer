@@ -10,9 +10,12 @@ import {
   YStack,
 } from 'tamagui'
 import {
+  Clipboard,
   DownloadCloud,
+  ExternalLink,
   FileArchive,
   FileText,
+  MessageSquare,
   MoveRight,
   Plus,
   RefreshCw,
@@ -29,6 +32,9 @@ import type {
   CanonFileSummary,
   CanonInstance,
   CanonStatus,
+  ChatGptContextMode,
+  ChatGptRequest,
+  ChatGptResponseResult,
   SyncResult,
   TimelineEvent,
 } from './types'
@@ -158,6 +164,13 @@ export function App() {
   const [newEntryDraft, setNewEntryDraft] = useState('')
   const [editEntryDraft, setEditEntryDraft] = useState('')
   const [metadataDraft, setMetadataDraft] = useState<MetadataDraft>(emptyMetadataDraft)
+  const [chatGptMode, setChatGptMode] = useState<ChatGptContextMode>('digest')
+  const [chatGptInstruction, setChatGptInstruction] = useState(
+    'Review this canon context for contradictions, continuity risks, and useful next questions.',
+  )
+  const [chatGptRequest, setChatGptRequest] = useState<ChatGptRequest | null>(null)
+  const [chatGptResponse, setChatGptResponse] = useState('')
+  const [chatGptResponseTitle, setChatGptResponseTitle] = useState('')
   const editorDirtyRef = useRef(false)
   const editorDraftRef = useRef('')
   const archiveImportInputRef = useRef<HTMLInputElement | null>(null)
@@ -757,6 +770,89 @@ export function App() {
     }
   }
 
+  const createChatGptUiRequest = async () => {
+    const instruction = chatGptInstruction.trim()
+    if (!instruction) {
+      setError('ChatGPT request instructions are required.')
+      return
+    }
+
+    setBusy('ChatGPT Request')
+    setError('')
+    try {
+      const request = await api<ChatGptRequest>('/api/chatgpt/request', {
+        method: 'POST',
+        body: JSON.stringify({
+          mode: chatGptMode,
+          instruction,
+          fileName: chatGptMode === 'current' ? selectedFile : undefined,
+        }),
+      })
+      setChatGptRequest(request)
+      await copyToClipboard(request.content)
+      await api<{ opened: string }>('/api/chatgpt/open', { method: 'POST' })
+      await refreshStatus()
+      setNotice(`ChatGPT request copied and ${request.chatGptUrl} opened.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const copyChatGptRequest = async () => {
+    if (!chatGptRequest) return
+    setError('')
+    try {
+      await copyToClipboard(chatGptRequest.content)
+      setNotice(`Copied ${chatGptRequest.name} for ChatGPT.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const openChatGpt = async () => {
+    setBusy('Open ChatGPT')
+    setError('')
+    try {
+      const result = await api<{ opened: string }>('/api/chatgpt/open', { method: 'POST' })
+      setNotice(`Opened ${result.opened}.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const saveChatGptUiResponse = async () => {
+    const content = chatGptResponse.trim()
+    if (!content) {
+      setError('Paste a ChatGPT response before saving.')
+      return
+    }
+
+    setBusy('Save ChatGPT')
+    setError('')
+    try {
+      const result = await api<ChatGptResponseResult>('/api/chatgpt/response', {
+        method: 'POST',
+        body: JSON.stringify({
+          content,
+          title: chatGptResponseTitle,
+        }),
+      })
+      applyStatus(result.status, { force: true })
+      setSelectedFile(result.name)
+      setChatGptResponse('')
+      setChatGptResponseTitle('')
+      setNotice(`Saved ChatGPT response to ${result.name}.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const openSourceReference = ({
     source,
     lineNumber,
@@ -1215,6 +1311,94 @@ export function App() {
 
           <Separator />
 
+          <Text className="section-title">ChatGPT UI</Text>
+          <YStack className="chatgpt-panel">
+            <XStack className="chatgpt-mode-row">
+              {(['digest', 'full', 'current'] as ChatGptContextMode[]).map((mode) => (
+                <Button
+                  key={mode}
+                  size="$2"
+                  className={`chatgpt-mode ${chatGptMode === mode ? 'active' : ''}`}
+                  disabled={!!busy || (mode === 'current' && !selectedFile)}
+                  onPress={() => setChatGptMode(mode)}
+                  title={
+                    mode === 'current'
+                      ? 'Use the currently selected file as ChatGPT context'
+                      : `Use the ${mode} generated context pack`
+                  }
+                >
+                  {mode === 'digest' ? 'Digest' : mode === 'full' ? 'Full' : 'Current'}
+                </Button>
+              ))}
+            </XStack>
+            <textarea
+              className="chatgpt-textarea instruction"
+              value={chatGptInstruction}
+              disabled={!!busy}
+              onChange={(event) => setChatGptInstruction(event.currentTarget.value)}
+              placeholder="Request for ChatGPT"
+            />
+            <XStack className="chatgpt-actions">
+              <Button
+                size="$2"
+                icon={MessageSquare}
+                disabled={!!busy || (chatGptMode === 'current' && !selectedFile)}
+                onPress={createChatGptUiRequest}
+                title="Create a request, copy it, and open ChatGPT in the browser"
+              >
+                Send to UI
+              </Button>
+              <Button
+                size="$2"
+                icon={Clipboard}
+                disabled={!!busy || !chatGptRequest}
+                onPress={copyChatGptRequest}
+                title="Copy the last generated ChatGPT request"
+              >
+                Copy
+              </Button>
+              <Button
+                size="$2"
+                icon={ExternalLink}
+                disabled={!!busy}
+                onPress={openChatGpt}
+                title="Open ChatGPT in the browser"
+              >
+                Open
+              </Button>
+            </XStack>
+            {chatGptRequest && (
+              <Text className="chatgpt-meta" numberOfLines={2}>
+                Last request: {chatGptRequest.name} · {chatGptMode} context
+              </Text>
+            )}
+            <Input
+              className="metadata-input"
+              value={chatGptResponseTitle}
+              disabled={!!busy}
+              onChangeText={setChatGptResponseTitle}
+              placeholder="Response title"
+            />
+            <textarea
+              className="chatgpt-textarea response"
+              value={chatGptResponse}
+              disabled={!!busy}
+              onChange={(event) => setChatGptResponse(event.currentTarget.value)}
+              placeholder="Paste ChatGPT response here"
+            />
+            <Button
+              size="$2"
+              icon={Save}
+              disabled={!!busy || !chatGptResponse.trim()}
+              onPress={saveChatGptUiResponse}
+              title="Save the pasted ChatGPT response into the working copy"
+            >
+              Save Response
+            </Button>
+          </YStack>
+
+          <Separator />
+
           <Text className="section-title">Bibisco Lens</Text>
           <YStack className="prompt-list">
             <Prompt text="Who wants something here?" />
@@ -1646,6 +1830,26 @@ function Prompt({ text }: { text: string }) {
 
 function EmptyView({ label }: { label: string }) {
   return <Text className="empty-view">{label}</Text>
+}
+
+async function copyToClipboard(content: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(content)
+    return
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = content
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) {
+    throw new Error('Clipboard copy failed.')
+  }
 }
 
 function downloadTextFile(name: string, content: string) {
