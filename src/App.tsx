@@ -23,6 +23,7 @@ import {
   Search,
   Trash2,
   UploadCloud,
+  X,
 } from '@tamagui/lucide-icons'
 import { MarkdownEditor } from './components/MarkdownEditor'
 import { MarkdownPreview } from './components/MarkdownPreview'
@@ -85,6 +86,7 @@ interface EditorNavigationTarget {
 type InspectorView = 'timeline' | 'events' | 'characters' | 'locations' | 'objects' | 'arcs'
 type EntityInspectorView = 'events' | 'characters' | 'locations' | 'objects'
 type RegistryInspectorView = EntityInspectorView | 'arcs'
+type ActiveInspectorView = InspectorView | null
 type EntityKind = CanonEntity['kind']
 type RegistryKind = EntityKind | 'arc'
 
@@ -137,11 +139,11 @@ const emptyMetadataDraft: MetadataDraft = {
   eventIds: '',
 }
 
-function isEntityInspectorView(view: InspectorView): view is EntityInspectorView {
+function isEntityInspectorView(view: ActiveInspectorView): view is EntityInspectorView {
   return view === 'events' || view === 'characters' || view === 'locations' || view === 'objects'
 }
 
-function isRegistryInspectorView(view: InspectorView): view is RegistryInspectorView {
+function isRegistryInspectorView(view: ActiveInspectorView): view is RegistryInspectorView {
   return isEntityInspectorView(view) || view === 'arcs'
 }
 
@@ -160,7 +162,7 @@ export function App() {
   const [selectedReferenceKey, setSelectedReferenceKey] = useState<string | null>(null)
   const [editorTarget, setEditorTarget] = useState<EditorNavigationTarget | null>(null)
   const [previewMode, setPreviewMode] = useState(false)
-  const [inspectorView, setInspectorView] = useState<InspectorView>('timeline')
+  const [inspectorView, setInspectorView] = useState<ActiveInspectorView>(null)
   const [newEntryDraft, setNewEntryDraft] = useState('')
   const [editEntryDraft, setEditEntryDraft] = useState('')
   const [metadataDraft, setMetadataDraft] = useState<MetadataDraft>(emptyMetadataDraft)
@@ -270,7 +272,7 @@ export function App() {
         await runAction('Archive Import', () =>
           api<SyncResult>('/api/archive/import', {
             method: 'POST',
-            body: JSON.stringify({ content }),
+            body: JSON.stringify({ content, fileName: file.name }),
           }),
         )
       } catch (err) {
@@ -517,6 +519,33 @@ export function App() {
       setEditorDirty(false)
       await refreshStatus()
       setNotice(`Saved ${selectedFile} to the local working copy.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const deleteWorkingCopyFile = async (name: string) => {
+    const shouldDelete = window.confirm(`Delete ${name} from the working copy?`)
+    if (!shouldDelete) return
+
+    setBusy('Delete File')
+    setError('')
+    try {
+      const result = await api<SyncResult>(`/api/files/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      })
+      applyStatus(result.status, { force: true })
+      if (selectedFile === name) {
+        setSelectedFile(result.status.files[0]?.name ?? null)
+        setEditorValue('')
+        setSavedValue('')
+        editorDraftRef.current = ''
+        editorDirtyRef.current = false
+        setEditorDirty(false)
+      }
+      setNotice(`Deleted ${name} from the working copy.`)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -919,6 +948,11 @@ export function App() {
     setNotice(`${arc.title}: ${arc.eventCount} timeline events referenced.`)
   }
 
+  const closeDetailsPanel = () => {
+    setSelectedReferenceKey(null)
+    setSelectedEventKey(null)
+  }
+
   const changeInspectorView = (view: InspectorView) => {
     setInspectorView(view)
     setSelectedEventKey(null)
@@ -1064,25 +1098,34 @@ export function App() {
           <ScrollView className="file-list">
             <YStack gap="$2">
               {filteredFiles.map((file) => (
-                <Button
-                  key={file.name}
-                  className={`file-row ${selectedFile === file.name ? 'selected' : ''}`}
-                  onPress={() => setSelectedFile(file.name)}
-                  chromeless
-                >
-                  <XStack gap="$2" alignItems="center" width="100%">
-                    <FileText size={16} color="#344054" />
-                    <YStack minWidth={0} flex={1}>
-                      <Text className="file-name" numberOfLines={1}>
-                        {file.name}
-                      </Text>
-                      <Text className="file-meta" numberOfLines={1}>
-                        {fileKindLabel[file.kind]} · {stateLabel[file.syncState]}
-                      </Text>
-                    </YStack>
-                    <StatePill state={file.syncState} />
-                  </XStack>
-                </Button>
+                <XStack key={file.name} className="file-row-shell">
+                  <Button
+                    className={`file-row ${selectedFile === file.name ? 'selected' : ''}`}
+                    onPress={() => setSelectedFile(file.name)}
+                    chromeless
+                  >
+                    <XStack gap="$2" alignItems="center" width="100%">
+                      <FileText size={16} color="#344054" />
+                      <YStack minWidth={0} flex={1}>
+                        <Text className="file-name" numberOfLines={1}>
+                          {file.name}
+                        </Text>
+                        <Text className="file-meta" numberOfLines={1}>
+                          {fileKindLabel[file.kind]} · {stateLabel[file.syncState]}
+                        </Text>
+                      </YStack>
+                      <StatePill state={file.syncState} />
+                    </XStack>
+                  </Button>
+                  <Button
+                    chromeless
+                    className="file-delete"
+                    icon={Trash2}
+                    disabled={!!busy}
+                    onPress={() => deleteWorkingCopyFile(file.name)}
+                    title={`Delete ${file.name} from the working copy`}
+                  />
+                </XStack>
               ))}
             </YStack>
           </ScrollView>
@@ -1158,7 +1201,7 @@ export function App() {
             />
           </XStack>
 
-          {isRegistryInspectorView(inspectorView) && (
+          {isRegistryInspectorView(inspectorView) && !selectedEntity && !selectedArc && (
             <XStack className="entry-add">
               <Input
                 className="search-input"
@@ -1188,7 +1231,7 @@ export function App() {
             </ScrollView>
           )}
 
-          {inspectorView === 'events' && (
+          {inspectorView === 'events' && !selectedEntity && (
             <ScrollView className="event-list">
               <YStack gap="$2">
                 {filteredPlotEvents.length === 0 && (
@@ -1206,7 +1249,7 @@ export function App() {
             </ScrollView>
           )}
 
-          {inspectorView === 'characters' && (
+          {inspectorView === 'characters' && !selectedEntity && (
             <ScrollView className="event-list">
               <YStack gap="$2">
                 {filteredCharacters.length === 0 && (
@@ -1224,7 +1267,7 @@ export function App() {
             </ScrollView>
           )}
 
-          {inspectorView === 'locations' && (
+          {inspectorView === 'locations' && !selectedEntity && (
             <ScrollView className="event-list">
               <YStack gap="$2">
                 {filteredLocations.length === 0 && (
@@ -1242,7 +1285,7 @@ export function App() {
             </ScrollView>
           )}
 
-          {inspectorView === 'arcs' && (
+          {inspectorView === 'arcs' && !selectedArc && (
             <ScrollView className="event-list">
               <YStack gap="$2">
                 {filteredArcs.length === 0 && (
@@ -1260,7 +1303,7 @@ export function App() {
             </ScrollView>
           )}
 
-          {inspectorView === 'objects' && (
+          {inspectorView === 'objects' && !selectedEntity && (
             <ScrollView className="event-list">
               <YStack gap="$2">
                 {filteredObjects.length === 0 && (
@@ -1290,6 +1333,7 @@ export function App() {
               onMetadataCommit={updateSelectedMetadata}
               onMove={moveSelectedRegistryEntry}
               onRemove={removeSelectedRegistryEntry}
+              onClose={closeDetailsPanel}
               onPress={(instance) => selectEntityInstance(selectedEntity, instance)}
             />
           )}
@@ -1305,108 +1349,111 @@ export function App() {
               onEditNameBlur={updateSelectedArcName}
               onMetadataCommit={updateSelectedMetadata}
               onRemove={removeSelectedRegistryArc}
+              onClose={closeDetailsPanel}
               onOpenEvent={selectTimelineEvent}
             />
           )}
 
-          <Separator />
-
-          <Text className="section-title">ChatGPT UI</Text>
-          <YStack className="chatgpt-panel">
-            <XStack className="chatgpt-mode-row">
-              {(['digest', 'full', 'current'] as ChatGptContextMode[]).map((mode) => (
+          {inspectorView === null && (
+            <>
+              <Text className="section-title">ChatGPT UI</Text>
+              <YStack className="chatgpt-panel">
+                <XStack className="chatgpt-mode-row">
+                  {(['digest', 'full', 'current'] as ChatGptContextMode[]).map((mode) => (
+                    <Button
+                      key={mode}
+                      size="$2"
+                      className={`chatgpt-mode ${chatGptMode === mode ? 'active' : ''}`}
+                      disabled={!!busy || (mode === 'current' && !selectedFile)}
+                      onPress={() => setChatGptMode(mode)}
+                      title={
+                        mode === 'current'
+                          ? 'Use the currently selected file as ChatGPT context'
+                          : `Use the ${mode} generated context pack`
+                      }
+                    >
+                      {mode === 'digest' ? 'Digest' : mode === 'full' ? 'Full' : 'Current'}
+                    </Button>
+                  ))}
+                </XStack>
+                <textarea
+                  className="chatgpt-textarea instruction"
+                  value={chatGptInstruction}
+                  disabled={!!busy}
+                  onChange={(event) => setChatGptInstruction(event.currentTarget.value)}
+                  placeholder="Request for ChatGPT"
+                />
+                <XStack className="chatgpt-actions">
+                  <Button
+                    size="$2"
+                    icon={MessageSquare}
+                    disabled={!!busy || (chatGptMode === 'current' && !selectedFile)}
+                    onPress={createChatGptUiRequest}
+                    title="Create a request, copy it, and open ChatGPT in the browser"
+                  >
+                    Send to UI
+                  </Button>
+                  <Button
+                    size="$2"
+                    icon={Clipboard}
+                    disabled={!!busy || !chatGptRequest}
+                    onPress={copyChatGptRequest}
+                    title="Copy the last generated ChatGPT request"
+                  >
+                    Copy
+                  </Button>
+                  <Button
+                    size="$2"
+                    icon={ExternalLink}
+                    disabled={!!busy}
+                    onPress={openChatGpt}
+                    title="Open ChatGPT in the browser"
+                  >
+                    Open
+                  </Button>
+                </XStack>
+                {chatGptRequest && (
+                  <Text className="chatgpt-meta" numberOfLines={2}>
+                    Last request: {chatGptRequest.name} · {chatGptMode} context
+                  </Text>
+                )}
+                <Input
+                  className="metadata-input"
+                  value={chatGptResponseTitle}
+                  disabled={!!busy}
+                  onChangeText={setChatGptResponseTitle}
+                  placeholder="Response title"
+                />
+                <textarea
+                  className="chatgpt-textarea response"
+                  value={chatGptResponse}
+                  disabled={!!busy}
+                  onChange={(event) => setChatGptResponse(event.currentTarget.value)}
+                  placeholder="Paste ChatGPT response here"
+                />
                 <Button
-                  key={mode}
                   size="$2"
-                  className={`chatgpt-mode ${chatGptMode === mode ? 'active' : ''}`}
-                  disabled={!!busy || (mode === 'current' && !selectedFile)}
-                  onPress={() => setChatGptMode(mode)}
-                  title={
-                    mode === 'current'
-                      ? 'Use the currently selected file as ChatGPT context'
-                      : `Use the ${mode} generated context pack`
-                  }
+                  icon={Save}
+                  disabled={!!busy || !chatGptResponse.trim()}
+                  onPress={saveChatGptUiResponse}
+                  title="Save the pasted ChatGPT response into the working copy"
                 >
-                  {mode === 'digest' ? 'Digest' : mode === 'full' ? 'Full' : 'Current'}
+                  Save Response
                 </Button>
-              ))}
-            </XStack>
-            <textarea
-              className="chatgpt-textarea instruction"
-              value={chatGptInstruction}
-              disabled={!!busy}
-              onChange={(event) => setChatGptInstruction(event.currentTarget.value)}
-              placeholder="Request for ChatGPT"
-            />
-            <XStack className="chatgpt-actions">
-              <Button
-                size="$2"
-                icon={MessageSquare}
-                disabled={!!busy || (chatGptMode === 'current' && !selectedFile)}
-                onPress={createChatGptUiRequest}
-                title="Create a request, copy it, and open ChatGPT in the browser"
-              >
-                Send to UI
-              </Button>
-              <Button
-                size="$2"
-                icon={Clipboard}
-                disabled={!!busy || !chatGptRequest}
-                onPress={copyChatGptRequest}
-                title="Copy the last generated ChatGPT request"
-              >
-                Copy
-              </Button>
-              <Button
-                size="$2"
-                icon={ExternalLink}
-                disabled={!!busy}
-                onPress={openChatGpt}
-                title="Open ChatGPT in the browser"
-              >
-                Open
-              </Button>
-            </XStack>
-            {chatGptRequest && (
-              <Text className="chatgpt-meta" numberOfLines={2}>
-                Last request: {chatGptRequest.name} · {chatGptMode} context
-              </Text>
-            )}
-            <Input
-              className="metadata-input"
-              value={chatGptResponseTitle}
-              disabled={!!busy}
-              onChangeText={setChatGptResponseTitle}
-              placeholder="Response title"
-            />
-            <textarea
-              className="chatgpt-textarea response"
-              value={chatGptResponse}
-              disabled={!!busy}
-              onChange={(event) => setChatGptResponse(event.currentTarget.value)}
-              placeholder="Paste ChatGPT response here"
-            />
-            <Button
-              size="$2"
-              icon={Save}
-              disabled={!!busy || !chatGptResponse.trim()}
-              onPress={saveChatGptUiResponse}
-              title="Save the pasted ChatGPT response into the working copy"
-            >
-              Save Response
-            </Button>
-          </YStack>
+              </YStack>
 
-          <Separator />
+              <Separator />
 
-          <Text className="section-title">Bibisco Lens</Text>
-          <YStack className="prompt-list">
-            <Prompt text="Who wants something here?" />
-            <Prompt text="What changes after this event?" />
-            <Prompt text="Which flaw, wound, or contradiction is exposed?" />
-            <Prompt text="What does the reader know versus the truth?" />
-            <Prompt text="Which motif or faction myth is reinforced?" />
-          </YStack>
+              <Text className="section-title">Bibisco Lens</Text>
+              <YStack className="prompt-list">
+                <Prompt text="Who wants something here?" />
+                <Prompt text="What changes after this event?" />
+                <Prompt text="Which flaw, wound, or contradiction is exposed?" />
+                <Prompt text="What does the reader know versus the truth?" />
+                <Prompt text="Which motif or faction myth is reinforced?" />
+              </YStack>
+            </>
+          )}
         </YStack>
       </XStack>
     </YStack>
@@ -1524,6 +1571,7 @@ function InstancePanel({
   onMetadataCommit,
   onMove,
   onRemove,
+  onClose,
   onPress,
 }: {
   entity: CanonEntity
@@ -1536,6 +1584,7 @@ function InstancePanel({
   onMetadataCommit: (draft: MetadataDraft) => void
   onMove: (kind: EntityKind) => void
   onRemove: () => void
+  onClose: () => void
   onPress: (instance: CanonInstance) => void
 }) {
   return (
@@ -1544,9 +1593,19 @@ function InstancePanel({
         <Text className="section-title" numberOfLines={1}>
           {entity.name}
         </Text>
-        <Text className="event-source">
-          {entity.instances.length} occurrence{entity.instances.length === 1 ? '' : 's'}
-        </Text>
+        <XStack className="instance-heading-actions">
+          <Text className="event-source">
+            {entity.instances.length} occurrence{entity.instances.length === 1 ? '' : 's'}
+          </Text>
+          <Button
+            chromeless
+            size="$2"
+            icon={X}
+            className="panel-close"
+            onPress={onClose}
+            title="Close details"
+          />
+        </XStack>
       </XStack>
 
       <YStack className="entity-actions">
@@ -1684,6 +1743,7 @@ function ArcPanel({
   onEditNameBlur,
   onMetadataCommit,
   onRemove,
+  onClose,
   onOpenEvent,
 }: {
   arc: CanonArc
@@ -1695,6 +1755,7 @@ function ArcPanel({
   onEditNameBlur: () => void
   onMetadataCommit: (draft: MetadataDraft) => void
   onRemove: () => void
+  onClose: () => void
   onOpenEvent: (event: TimelineEvent) => void
 }) {
   const eventMap = new Map(events.map((event) => [event.id, event]))
@@ -1706,9 +1767,19 @@ function ArcPanel({
         <Text className="section-title" numberOfLines={1}>
           {arc.title}
         </Text>
-        <Text className="event-source">
-          {arc.eventCount} event{arc.eventCount === 1 ? '' : 's'}
-        </Text>
+        <XStack className="instance-heading-actions">
+          <Text className="event-source">
+            {arc.eventCount} event{arc.eventCount === 1 ? '' : 's'}
+          </Text>
+          <Button
+            chromeless
+            size="$2"
+            icon={X}
+            className="panel-close"
+            onPress={onClose}
+            title="Close details"
+          />
+        </XStack>
       </XStack>
 
       <YStack className="entity-actions">

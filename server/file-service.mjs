@@ -154,6 +154,11 @@ export function createApiHandler() {
         return sendJson(res, await readWorkingFile(name))
       }
 
+      if (fileMatch && req.method === 'DELETE') {
+        const name = decodeURIComponent(fileMatch[1])
+        return sendJson(res, await deleteWorkingFile(name))
+      }
+
       sendText(res, 404, 'Not found')
       return true
     } catch (error) {
@@ -436,9 +441,17 @@ export async function importTimelineTagArchive(content) {
     imported.push(source.name)
   }
 
+  const removed = await removeDuplicateTimelineTagWorkingFiles(imported)
+
   return result('import-archive', {
     copied: imported,
-    messages: [`Imported ${imported.length} files from ${archiveFileName}.`],
+    skipped: removed,
+    messages: [
+      `Imported ${imported.length} files from ${archiveFileName}.`,
+      ...(removed.length > 0
+        ? [`Removed duplicate live timeline/tag files from the working copy: ${removed.join(', ')}.`]
+        : []),
+    ],
   })
 }
 
@@ -665,6 +678,51 @@ function parseTimelineTagArchive(content) {
   return files
 }
 
+async function removeDuplicateTimelineTagWorkingFiles(importedNames) {
+  const config = await readConfig()
+  const canonicalNames = new Set(archiveSourceNames)
+  const importedNameSet = new Set(importedNames)
+  const removed = new Set()
+  const manifest = await readManifest()
+  const scanDirectory = async (directory, updateManifest) => {
+    const names = await listSupportedFiles(directory)
+
+    for (const name of names) {
+      if (canonicalNames.has(name) || importedNameSet.has(name)) continue
+      if (getFileKind(name) !== 'source' || path.extname(name).toLowerCase() !== '.md') continue
+
+      const filePath = path.join(directory, name)
+      const content = await fs.readFile(filePath, 'utf8').catch(() => '')
+      if (!isDuplicateTimelineTagWorkingFile(name, content)) continue
+
+      await fs.rm(filePath, { force: true })
+      if (updateManifest) delete manifest.files[name]
+      removed.add(name)
+    }
+  }
+
+  await scanDirectory(cacheDir, true)
+  await scanDirectory(config.canonDir, false)
+
+  if (removed.size > 0) {
+    await writeManifest(manifest)
+  }
+
+  return [...removed].sort(compareFileNames)
+}
+
+function isDuplicateTimelineTagWorkingFile(name, content) {
+  const lowerName = name.toLowerCase()
+  if (content.includes('OOAM TIMELINE TAG ARCHIVE')) return true
+  if (/^timeline[-_.]/.test(lowerName) && parseOutline(content, name).events.length > 0) return true
+  if (/^events[-_.]/.test(lowerName) && /^#\s+Major Plot Events\b/im.test(content)) return true
+  if (/^characters[-_.]/.test(lowerName) && /^#\s+Characters\b/im.test(content)) return true
+  if (/^locations[-_.]/.test(lowerName) && /^#\s+Locations\b/im.test(content)) return true
+  if (/^objects[-_.]/.test(lowerName) && /^#\s+Objects\b/im.test(content)) return true
+  if (/^arcs[-_.]/.test(lowerName) && /^#\s+Narrative Arcs\b/im.test(content)) return true
+  return false
+}
+
 function assertArchiveSourceName(name, allowedNames) {
   assertSafeFileName(name)
   if (!allowedNames.has(name)) {
@@ -697,6 +755,19 @@ async function writeWorkingFile(name, content) {
   assertSafeFileName(name)
   await ensureDirectories()
   await writeFileAtomic(path.join(cacheDir, name), content)
+}
+
+async function deleteWorkingFile(name) {
+  assertSafeFileName(name)
+  await ensureDirectories()
+  await fs.rm(path.join(cacheDir, name), { force: true })
+  const manifest = await readManifest()
+  delete manifest.files[name]
+  await writeManifest(manifest)
+  return result('delete-file', {
+    copied: [name],
+    messages: [`Deleted ${name} from the working copy.`],
+  })
 }
 
 const registryFileByKind = {

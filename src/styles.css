@@ -278,13 +278,34 @@ textarea {
   scrollbar-gutter: stable;
 }
 
+.file-row-shell {
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+}
+
 .file-row {
   justify-content: flex-start;
-  width: 100%;
+  min-width: 0;
+  flex: 1;
   min-height: 58px;
   padding: 8px;
   border: 1px solid transparent;
   background: #ffffff;
+}
+
+.file-delete {
+  width: 34px;
+  min-width: 34px;
+  min-height: 58px;
+  padding: 0;
+  border: 1px solid transparent;
+  color: #9f2f2f;
+}
+
+.file-delete:hover {
+  border-color: #d65f5f;
+  background: #fff0f0;
 }
 
 .file-row:hover,
@@ -519,6 +540,19 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.instance-heading-actions {
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.panel-close {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
 }
 
 .instance-list {

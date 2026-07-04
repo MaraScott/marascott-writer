@@ -93,7 +93,7 @@ export interface CanonStatus {
 }
 
 export interface SyncResult {
-  action: 'sync-down' | 'sync-up' | 'export-context' | 'export-archive' | 'import-archive'
+  action: 'sync-down' | 'sync-up' | 'export-context' | 'export-archive' | 'import-archive' | 'delete-file'
   copied: string[]
   uploaded: string[]
   downloaded: string[]
